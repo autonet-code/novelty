@@ -5,10 +5,21 @@ Implements the core loop abstractions using Wikidata as the knowledge graph.
 
 - WikidataProbe: fetch() queries Wikidata, parse() evaluates termination
 - WikidataFrame: reference frame backed by Wikidata concepts
+
+Attention-Guided Recursion:
+When enabled, uses cheap embedding computations during graph traversal
+to prioritize which nodes to expand next. This models human-like attention:
+we don't explore the knowledge graph uniformly, we focus on what seems
+most relevant to our current inquiry.
+
+Salience formula: salience(node) = embedding_similarity × wikidata_notability
+- embedding_similarity: How semantically related is this node to query/frame?
+- wikidata_notability: sitelinks count as a prior for importance
 """
 
 from dataclasses import dataclass, field
 from typing import Any, List, Tuple, Optional, Set
+import math
 
 try:
     from .core import (
@@ -36,6 +47,11 @@ try:
         get_adjacent_with_metadata,
         get_topically_related,
     )
+    from .embeddings import (
+        cached_similarity,
+        preload_cache,
+        EmbeddingCache,
+    )
 except ImportError:
     from core import (
         NoveltyProbe,
@@ -62,6 +78,101 @@ except ImportError:
         get_adjacent_with_metadata,
         get_topically_related,
     )
+    from embeddings import (
+        cached_similarity,
+        preload_cache,
+        EmbeddingCache,
+    )
+
+
+# =============================================================================
+# Attention Context for Guided Recursion
+# =============================================================================
+
+@dataclass
+class AttentionContext:
+    """
+    Tracks attention during graph traversal.
+
+    Models human-like attention: we focus on nodes that seem relevant
+    to our current inquiry (query) or might interact with our beliefs (frame).
+
+    Uses cheap embeddings (~10ms cached) rather than expensive NLI (~200ms).
+    """
+    query_text: str                          # What we're looking for
+    frame_texts: List[str] = field(default_factory=list)  # Frame claims to attend to
+    _cache: Optional[EmbeddingCache] = None  # Shared cache for efficiency
+
+    def __post_init__(self):
+        if self._cache is None:
+            self._cache = EmbeddingCache()
+        # Preload embeddings for query and frame
+        texts_to_cache = [self.query_text] + self.frame_texts
+        self._cache.preload(texts_to_cache)
+
+    def compute_salience(
+        self,
+        node_label: str,
+        wikidata_notability: float = 1.0,
+    ) -> float:
+        """
+        Compute attention salience for a node.
+
+        Salience = semantic_relevance × notability_prior
+
+        Args:
+            node_label: The text label of the node
+            wikidata_notability: Normalized sitelinks count (0-1)
+
+        Returns:
+            Salience score (0-1), higher = more attention-worthy
+        """
+        # Similarity to query (what we're exploring)
+        query_sim = self._cache.similarity(self.query_text, node_label)
+
+        # Max similarity to frame claims (potential for interaction)
+        frame_sim = 0.0
+        if self.frame_texts:
+            frame_sims = [
+                self._cache.similarity(claim, node_label)
+                for claim in self.frame_texts
+            ]
+            frame_sim = max(frame_sims)
+
+        # Combined relevance: prioritize nodes relevant to both query and frame
+        # This catches nodes that might bridge query to frame (contradiction potential)
+        semantic_relevance = 0.6 * query_sim + 0.4 * frame_sim
+
+        # Apply notability as a prior (avoid obscure Wikidata entries)
+        salience = semantic_relevance * (0.3 + 0.7 * wikidata_notability)
+
+        return salience
+
+    def rank_nodes(
+        self,
+        nodes: List[AdjacentNode],
+        top_k: int = 5,
+    ) -> List[Tuple[AdjacentNode, float]]:
+        """
+        Rank candidate nodes by attention salience.
+
+        Args:
+            nodes: Candidate nodes from Wikidata
+            top_k: Number of top nodes to return
+
+        Returns:
+            List of (node, salience) tuples, sorted by salience descending
+        """
+        scored = []
+        for node in nodes:
+            # Normalize sitelinks to 0-1 (log scale, 100 sitelinks -> 0.67)
+            notability = min(math.log(node.sitelinks + 1) / math.log(150), 1.0)
+            salience = self.compute_salience(node.label, notability)
+            scored.append((node, salience))
+
+        # Sort by salience descending
+        scored.sort(key=lambda x: -x[1])
+        return scored[:top_k]
 
 
 # =============================================================================
@@ -85,6 +196,10 @@ class WikidataFrame(ReferenceFrame):
     - A set of integrated Q-IDs (concepts already absorbed)
     - Claims derived from those concepts
     - Stake weights (derived from centrality/sitelinks)
+
+    Attention-guided recursion:
+    When attention_context is set, get_adjacent() uses embedding-based
+    salience to prioritize which nodes to expand next.
     """
     integrated_qids: Set[str] = field(default_factory=set)
     claims: List[WikidataClaim] = field(default_factory=list)
@@ -93,6 +208,9 @@ class WikidataFrame(ReferenceFrame):
     # Thresholds for termination decisions
     integration_threshold: float = 0.5  # Similarity above this = integrated
     contradiction_threshold: float = 0.6  # Stance confidence above this = contradiction
+
+    # Attention context for guided recursion (optional)
+    attention_context: Optional[AttentionContext] = None
 
     def contains(self, content: Any) -> Tuple[bool, float]:
         """
@@ -247,9 +365,15 @@ class WikidataFrame(ReferenceFrame):
             _total_stake=new_stake,
             integration_threshold=self.integration_threshold,
             contradiction_threshold=self.contradiction_threshold,
+            attention_context=self.attention_context,  # Preserve attention
         )
 
-    def get_adjacent(self, content: Any, use_smart_expansion: bool = True) -> List[Any]:
+    def get_adjacent(
+        self,
+        content: Any,
+        use_smart_expansion: bool = True,
+        use_attention: bool = True,
+    ) -> List[Any]:
         """
         Get adjacent concepts from Wikidata graph.
 
@@ -257,12 +381,16 @@ class WikidataFrame(ReferenceFrame):
         (sitelinks, statements count) to filter noise and prioritize
         relevant neighbors.
 
+        When attention_context is set and use_attention=True, nodes are
+        ranked by embedding-based salience before returning.
+
         Args:
             content: The content to expand from
             use_smart_expansion: If True, use metadata-filtered expansion
+            use_attention: If True and attention_context exists, rank by salience
 
         Returns:
-            List of Q-IDs for adjacent concepts
+            List of Q-IDs for adjacent concepts, ordered by salience if attention active
         """
         qid = self._to_qid(content)
         if qid is None:
@@ -276,14 +404,28 @@ class WikidataFrame(ReferenceFrame):
                 adjacent_nodes = get_topically_related(
                     qid,
                     reference_qids=list(self.integrated_qids)[:5],
-                    max_results=10,
+                    max_results=15,  # Get more candidates for attention ranking
                 )
 
-                # Extract Q-IDs, excluding already integrated
-                result = [
-                    node.qid for node in adjacent_nodes
+                # Filter already integrated
+                adjacent_nodes = [
+                    node for node in adjacent_nodes
                     if node.qid not in self.integrated_qids
                 ]
+
+                # Apply attention-guided ranking if context available
+                if use_attention and self.attention_context and adjacent_nodes:
+                    ranked = self.attention_context.rank_nodes(adjacent_nodes, top_k=8)
+
+                    if ranked:
+                        print(f"    [attention-guided] {len(ranked)} nodes ranked by salience:")
+                        for node, salience in ranked[:3]:
+                            print(f"      - {node.label} (salience={salience:.3f}, {node.sitelinks} sitelinks)")
+
+                    return [node.qid for node, _ in ranked]
+
+                # Fallback: use Wikidata ordering
+                result = [node.qid for node in adjacent_nodes[:10]]
 
                 if result:
                     print(f"    [smart expansion] {len(result)} relevant neighbors")
@@ -318,6 +460,36 @@ class WikidataFrame(ReferenceFrame):
         except Exception as e:
             print(f"    [get_adjacent] Error: {e}")
             return []
+
+    def set_attention(self, query_text: str) -> "WikidataFrame":
+        """
+        Set attention context for guided recursion.
+
+        Call this before measuring novelty to enable attention-guided
+        expansion during graph traversal.
+
+        Args:
+            query_text: The concept being explored (used as attention focus)
+
+        Returns:
+            New frame with attention context set
+        """
+        # Extract frame claim texts for attention
+        frame_texts = [claim.label for claim in self.claims if claim.label]
+
+        attention = AttentionContext(
+            query_text=query_text,
+            frame_texts=frame_texts,
+        )
+
+        return WikidataFrame(
+            integrated_qids=self.integrated_qids,
+            claims=self.claims,
+            _total_stake=self._total_stake,
+            integration_threshold=self.integration_threshold,
+            contradiction_threshold=self.contradiction_threshold,
+            attention_context=attention,
+        )
 
     @property
     def total_stake(self) -> float:
@@ -528,6 +700,7 @@ def measure_novelty(
     reference_concepts: List[str],
     max_iterations: int = 15,
     verbose: bool = True,
+    use_attention: bool = True,
 ) -> NoveltyResult:
     """
     Measure novelty of a concept against a reference frame.
@@ -537,6 +710,8 @@ def measure_novelty(
         reference_concepts: List of concepts that form the reference frame
         max_iterations: Max probe iterations
         verbose: Print progress
+        use_attention: If True, use attention-guided recursion (embedding-based
+                      salience scoring during graph traversal)
 
     Returns:
         NoveltyResult with termination reason and component scores
@@ -546,8 +721,16 @@ def measure_novelty(
 
     frame = WikidataFrame.from_concepts(reference_concepts)
 
+    # Enable attention-guided recursion if requested
+    if use_attention:
+        if verbose:
+            print(f"Enabling attention-guided recursion for '{concept}'")
+        frame = frame.set_attention(concept)
+
     if verbose:
         print(f"Frame has {len(frame.integrated_qids)} integrated concepts")
+        attention_status = "ENABLED" if frame.attention_context else "disabled"
+        print(f"Attention-guided recursion: {attention_status}")
         print(f"Measuring novelty of: {concept}")
         print("-" * 50)
 
