@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
 *.wav
-*.json
 .env
+
+# Archive folder (historical/misc files)
+.archive/
