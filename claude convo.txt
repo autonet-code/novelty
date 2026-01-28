@@ -1,0 +1,45 @@
+So I see you saying that time might not factor into the definition of novelty, and I tend to agree, things are what they are outside of time, but also novelty should be applied to a particular snapshot of existence in time or outside of time in relation to all things that ever existed. I think having the temporal association helps us verify whatever definition of novelty we might produce against real world historical and geological data. So that's what Mckenna was doing, as a way to back his model with observations. There might be other things we can observe to further ground our own model.13:17Right - so time isn't intrinsic to novelty itself, but it's useful as a validation axis. You can compute novelty against "everything that exists right now" or "everything that ever existed" and those are different reference frames that should produce different but internally consistent results.
+McKenna's move was to say "here's a temporal pattern, let's see if historical events cluster around the troughs." That's one way to validate. But it bakes in the assumption that the temporal pattern exists and is that specific shape.
+A cleaner approach might be to go the other direction: compute novelty for historical items against their contemporary reference frames, plot it over time, and see if any temporal structure emerges rather than being imposed. If there's acceleration, it should show up. If there are phase transitions or singularities, they should appear as discontinuities.
+For grounding the model itself - what makes something novel - here are some observable phenomena that any accurate definition should probably account for:
+
+Novelty is contextual (fire is novel to a child, not to an adult)
+Novelty can be recognized before it's understood (you know something is new before you know what it means)
+Novelty has diminishing returns within a category but can spike across categories
+Some novel things get absorbed into the reference quickly, others remain persistently novel
+Novelty seems to compound (novel combinations of novel things)
+
+Does your current local novelty calculation handle all of these? The statistical deviation approach gets the first one, maybe the third. Not sure about the others.I'll need you to keep exchanges short while we brainstorm, please. So we can get most out of our collaboration13:18Got it.
+The emergence approach makes sense - let structure appear from data rather than imposing it.
+Your list of what novelty should account for is a good checklist. The current code handles contextuality and maybe categorical spikes. It doesn't handle:
+
+Recognition before understanding
+Differential absorption rates
+Compounding
+
+Which of these feels most important to get right first?expand on all three now. you can use more text if you need13:19Recognition before understanding
+You encounter something and immediately register "this is different" before you can articulate why or what it means. This suggests novelty has a fast, low-resolution detection mode separate from the slower process of integrating it into your model of the world. Your current implementation computes novelty as a fully resolved score - it already "understands" the item through its attributes. But real novelty detection might need a two-stage process: a quick distance signal (something's off) followed by a detailed breakdown (here's how it's off). This matters because high-novelty items might resist the second stage entirely - they're so different that your attribute schema doesn't capture them well. The inability to categorize is the novelty.
+Differential absorption rates
+Some novel things become familiar within days (a new slang word, a meme). Others stay novel for decades or centuries (general relativity was novel for a long time even among physicists). The current model updates reference statistics when you add items, but it treats all additions equally. In reality, absorption rate probably depends on: how connectable the novel thing is to existing structure, how many people/processes are actively engaging with it, whether it opens new adjacent possibilities or closes them. A one-hit wonder gets absorbed fast; a paradigm shift keeps producing novelty downstream.
+Compounding
+Novel combinations of already-novel components should be more novel than novel combinations of familiar components. If A is novel and B is novel, A+B isn't just additive - it's multiplicative or worse, because the combination itself exists in a sparser region of possibility space. Your current attribute-based approach treats each attribute independently. It doesn't capture interaction effects where the combination is what's unprecedented, even if individual attributes aren't extreme.I don't see why "recognition before understanding" is important. We can just consider the thing at the level of understanding. Now of course, even "understanding" is not a rigid notion, because it can  happen at different levels, but there is an average level of knowledge about a specific concept which is conventionally agreed upon to constitute understanding. And of course an agent's understanding of a concept is directly proportional to their own novelty score for that concept, as all concepts are ultimately a recursive spring of infinite novelty. Maybe that's something to code for.13:23Reconciled understanding levels with recursive concept depth.The user is pushing back on "recognition before understanding" and making a good point - we can just work at the level of understanding, acknowledging that understanding itself has levels. Then they make an interesting observation: an agent's understanding of a concept is inversely related to their novelty score for it (more understanding = less novel to them).
+Then they say something interesting: "all concepts are ultimately a recursive spring of infinite novelty." This is saying that any concept, if you dig deep enough, keeps revealing new dimensions of difference. Understanding is never complete - you can always go deeper and find more novelty.
+So the insight to code for might be:
+
+Novelty is depth-dependent
+At any level of analysis, there's more novelty underneath
+Understanding = having traversed some depth of that recursion
+A concept's novelty to an agent depends on how deep they've gone
+
+This is actually a significant refinement. It means novelty isn't a fixed property of a thing, but a function of how deeply you've examined it relative to how deep it goes.
+I should acknowledge their point about recognition before understanding being droppable, and then engage with this recursive depth idea.You're right, drop that one.
+The recursive point is sharp though. A concept isn't a terminus - it's a node that opens into more structure the further you go. Novelty at level N depends on what you've explored at levels N-1 through 1. "Understanding" is just how far down you've gone.
+So novelty becomes a function of:
+
+The thing itself
+The reference frame
+The depth of examination
+
+An agent with shallow understanding sees low novelty (surface pattern matches their reference). An agent with deep understanding also might see low novelty (they've absorbed the depths). But there's a middle zone where deeper examination increases novelty - you realize the thing is stranger than you thought.
+This would explain why experts sometimes find more novelty in their domain than novices do. They're operating at depths where the differences are more pronounced.
+Worth coding: novelty as a function that can increase or decrease with examination depth, not just a static score.
